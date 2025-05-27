@@ -1,0 +1,2 @@
+../Core/Src/AD8232.c:13:6:AD8232_Init	8	static
+../Core/Src/AD8232.c:19:10:AD8232_Read	16	static
