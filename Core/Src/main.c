@@ -31,7 +31,7 @@
 #include "stdlib.h"
 #include "stdbool.h"
 #include "DHT.h"
-#include "max30100_for_stm32_hal.h"
+#include "MAX30100_PulseOximeter.h"
 #include "AD8232.h"
 /* USER CODE END Includes */
 
@@ -102,6 +102,10 @@ void RunProgram();
 void Max30100 ();
 void AD8232_ReadData();
 void ECG_DrawWave(uint16_t value);
+void onBeatDetected(void) {
+    // Xử lý khi phát hiện nhịp tim (bật LED, gửi UART, ...)
+
+}
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -127,15 +131,30 @@ int current_code;
 int current_cloud;
 int isDay;
 int AD8232_value = 0;		// READ AD8232
-
+PulseOximeter pox;
+uint32_t tsLastReport = 0;
 int choice = 1;
 int choiceTmp = 1;
 //
 int current = 1;
 bool updated = true;
 int16_t tx , ty;
-
+char MAX30100_data[1024];
+uint8_t heartRate;
+uint8_t spo2;
 int i = 0;
+
+// AT Commands
+uint8_t ATCommand1[UART_BUFFER_SIZE] = "GET /v1/forecast?latitude=10.7769&longitude=106.7009&current=temperature_2m,relative_humidity_2m,is_day,weather_code,cloud_cover&daily=weather_code,temperature_2m_max,temperature_2m_min,uv_index_max,wind_speed_10m_max&timezone=Asia%2FBangkok HTTP/1.1\r\nHost: api.open-meteo.com\r\nConnection: close\r\n\r\n";
+
+uint8_t ATCommand2[UART_BUFFER_SIZE] = "GET /v1/forecast?latitude=21.0285&longitude=105.8542&current=temperature_2m,relative_humidity_2m,is_day,weather_code,cloud_cover&daily=weather_code,temperature_2m_max,temperature_2m_min,uv_index_max,wind_speed_10m_max&timezone=Asia%2FBangkok HTTP/1.1\r\nHost: api.open-meteo.com\r\nConnection: close\r\n\r\n";
+
+uint8_t ATCommand3[UART_BUFFER_SIZE] = "GET /v1/forecast?latitude=20.8449&longitude=106.6881&current=temperature_2m,relative_humidity_2m,is_day,weather_code,cloud_cover&daily=weather_code,temperature_2m_max,temperature_2m_min,uv_index_max,wind_speed_10m_max&timezone=Asia%2FBangkok HTTP/1.1\r\nHost: api.open-meteo.com\r\nConnection: close\r\n\r\n";
+
+uint8_t ATCommand4[UART_BUFFER_SIZE] = "GET /v1/forecast?latitude=10.0452&longitude=105.7469&current=temperature_2m,relative_humidity_2m,is_day,weather_code,cloud_cover&daily=weather_code,temperature_2m_max,temperature_2m_min,uv_index_max,wind_speed_10m_max&timezone=Asia%2FBangkok HTTP/1.1\r\nHost: api.open-meteo.com\r\nConnection: close\r\n\r\n";
+
+uint8_t ATCommand5[UART_BUFFER_SIZE] = "GET /v1/forecast?latitude=16.0471&longitude=108.2068&current=temperature_2m,relative_humidity_2m,is_day,weather_code,cloud_cover&daily=weather_code,temperature_2m_max,temperature_2m_min,uv_index_max,wind_speed_10m_max&timezone=Asia%2FBangkok HTTP/1.1\r\nHost: api.open-meteo.com\r\nConnection: close\r\n\r\n";
+
 /* USER CODE END 0 */
 
 /**
@@ -186,26 +205,56 @@ int main(void)
   lcdSetOrientation(i%4);
   lcdFillRGB(COLOR_BLUE);
 
+  PulseOximeter_Init(&pox);
+    PulseOximeter_SetOnBeatDetectedCallback(&pox, onBeatDetected);
+    lcdSetTextColor(COLOR_RED,COLOR_BLACK);   // Màu chữ: vàng, nền: đen
+    lcdSetTextFont(&Font16);
+    if (!PulseOximeter_Begin(&pox, PULSEOXIMETER_DEBUGGINGMODE_NONE)) {
+    	lcdSetCursor(0, 0);
+    	lcdPrintf("Initializing!!");
+        while (1); // Lỗi khởi tạo, dừng lại
+    } else {
+    	lcdSetCursor(0, 0);
+    	    	lcdPrintf("Init successfull");
+//  	  ILI9341_WriteString(0, 0, "Init Successfull !!" , Font_7x10, ILI9341_CYAN, ILI9341_BLACK);
+    }
+    // Sau khi PulseOximeter_Begin(&pox, ...);
+    // Sau khi PulseOximeter_Begin(&pox, ...);
+    uint8_t spo2cfg = MAX30100_ReadRegister(MAX30100_REG_SPO2_CONFIGURATION);
+    spo2cfg |= (1 << 6); // Bật EN_SPO2
+    MAX30100_WriteRegister(MAX30100_REG_SPO2_CONFIGURATION, spo2cfg);
 
-//  if (HAL_I2C_IsDeviceReady(&hi2c1, 0x57, 3, 100) == HAL_OK) {
-//	  lcdSetTextColor(COLOR_CYAN, COLOR_BLACK);
-//	  lcdSetTextFont(&Font16);
-//	  lcdSetCursor(5, 5);
-//      lcdPrintf("MAX30100 OK\n");
-//      HAL_Delay(3000);
-//  } else {
-//	  lcdSetTextColor(COLOR_CYAN, COLOR_BLACK);
-//	  lcdSetTextFont(&Font16);
-//	  lcdSetCursor(5, 5);
-//      lcdPrintf("MAX30100 not found\n");
-//      HAL_Delay(3000);
-//  }
+    // Đọc lại để kiểm tra
+    spo2cfg = MAX30100_ReadRegister(MAX30100_REG_SPO2_CONFIGURATION);
+    sprintf(MAX30100_data, "SPO2CFG:0x%02X", spo2cfg);
 
-  MAX30100_Init(&hi2c1, &huart1);
-  MAX30100_SetSpO2SampleRate(MAX30100_SPO2SR_DEFAULT);
-  MAX30100_SetLEDPulseWidth(MAX30100_LEDPW_DEFAULT);
-  MAX30100_SetLEDCurrent(MAX30100_LEDCURRENT_DEFAULT, MAX30100_LEDCURRENT_DEFAULT);
-  MAX30100_SetMode(MAX30100_SPO2_MODE);
+    lcdSetCursor(0, 15);
+    lcdPrintf(MAX30100_data);
+    MAX30100_WriteRegister(MAX30100_REG_INTERRUPT_STATUS, 0x00);
+    uint8_t mode = MAX30100_ReadRegister(MAX30100_REG_MODE_CONFIGURATION);
+    char dbg[32];
+    sprintf(dbg, "MODE:0x%02X", mode);
+    lcdSetCursor(0, 30);
+    lcdPrintf(dbg);
+//    ILI9341_WriteString(0, 30, dbg, Font_7x10, ILI9341_RED, ILI9341_BLACK);
+
+    uint8_t status = MAX30100_ReadRegister(MAX30100_REG_INTERRUPT_STATUS);
+    sprintf(dbg, "INT:0x%02X", status);
+    lcdSetCursor(0, 45);
+    lcdPrintf(dbg);
+//    ILI9341_WriteString(0, 45, dbg, Font_7x10, ILI9341_RED, ILI9341_BLACK);
+
+    uint8_t part_id = MAX30100_GetPartId(&pox.hrm);
+    sprintf(MAX30100_data, "PartID: 0x%02X", part_id);
+    lcdSetCursor(0, 60);
+    lcdPrintf(MAX30100_data);
+//    ILI9341_WriteString(0, 60, data, Font_7x10, ILI9341_CYAN, ILI9341_BLACK);
+
+    HAL_Delay(5000);
+    tsLastReport = HAL_GetTick();
+    lcdFillRGB(COLOR_BLACK);
+
+
 
 
 
@@ -221,9 +270,10 @@ int main(void)
   {
 
 	  //RunProgram();
-//	  Max30100();
-	  AD8232_ReadData();
-	  HAL_Delay(1000);
+	  Max30100();
+//	  AD8232_ReadData();
+
+//	  HAL_Delay(1000);
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
@@ -622,16 +672,16 @@ void Send_AT_Command(UART_HandleTypeDef *huart, const char *command, uint32_t ti
 
     HAL_UART_Transmit(huart, (uint8_t *)command, strlen(command), HAL_MAX_DELAY);
 
-    // Ch�? phản hồi từ ESP
-    memset(uart_rx_buffer, 0, UART_BUFFER_SIZE); // Xóa buffer
-    HAL_UART_Receive(huart, uart_rx_buffer, UART_BUFFER_SIZE, timeout);
-
-    // Hiển thị phản hồi lên màn hình
-    lcdSetCursor(5,220);
-    Screen0();
-    lcdSetTextColor(COLOR_BLACK, COLOR_THEME_SKYBLUE_BASE);
-    lcdSetTextFont(&Font16);
-    lcdPrintf("ESP: %s\n", uart_rx_buffer);
+//    // Ch�? phản hồi từ ESP
+//    memset(uart_rx_buffer, 0, UART_BUFFER_SIZE); // Xóa buffer
+//    HAL_UART_Receive(huart, uart_rx_buffer, UART_BUFFER_SIZE, timeout);
+//
+//    // Hiển thị phản hồi lên màn hình
+//    lcdSetCursor(5,220);
+//    Screen0();
+//    lcdSetTextColor(COLOR_BLACK, COLOR_THEME_SKYBLUE_BASE);
+//    lcdSetTextFont(&Font16);
+//    lcdPrintf("ESP: %s\n", uart_rx_buffer);
 }
 void Send_AT_Command1(UART_HandleTypeDef *huart, const char *command, uint32_t timeout) {
     // Gửi lệnh qua UART
@@ -645,30 +695,11 @@ void Send_AT_Command1(UART_HandleTypeDef *huart, const char *command, uint32_t t
 
 
 void Send_AT_Commands(UART_HandleTypeDef *huart) {
-    // Gửi từng lệnh AT và xử lý phản hồi
-
-    Send_AT_Command(huart, "AT\r\n", 3000 );
-    Send_AT_Command(huart, "AT+CWMODE=3\r\n", 3000 );
-    Send_AT_Command(huart, "AT+CWJAP=\"Redmi Turbo 3\",\"88888888\"\r\n", 9000 );
-    Send_AT_Command(huart, "AT+CIPSTART=\"TCP\",\"api.open-meteo.com\",80\r\n", 3000 );
-    Send_AT_Command(huart, "AT+CIPSEND=299\r\n", 3000);
-
-    // Gửi yêu cầu GET cuối cùng
-    if (choice == 1){
-    	Send_AT_Command(huart, ATCommand1, 1000);
-    }
-    else if(choice == 2){
-    	Send_AT_Command(huart, ATCommand2, 1000);
-    }
-    else if(choice == 3){
-		Send_AT_Command(huart, ATCommand3, 1000);
-	}
-    else if(choice == 4){
-		Send_AT_Command(huart, ATCommand4, 1000);
-	}
-    else if(choice == 5){
-		Send_AT_Command(huart, ATCommand5, 1000);
-	}
+	char data[50];
+	sprintf(data, "hr= %d, spO2= %d\r\n", heartRate,spo2);
+	lcdSetCursor(0, 100);
+	lcdPrintf(data);
+	Send_AT_Command(huart, data , 10000);
 
 }
 void Resend_AT_Commands(UART_HandleTypeDef *huart){
@@ -829,12 +860,28 @@ void RunProgram(){
 
 }
 
-void Max30100 (){
-//	  lcdSetTextColor(COLOR_CYAN, COLOR_BLACK);
-//	  lcdSetTextFont(&Font16);
-//	  lcdSetCursor(5, 5);
-//	  lcdPrintf("MAX30100 : %d\n" , i);
-//	  i++;
+void Max30100 () {
+    PulseOximeter_Update(&pox);
+
+    // Định kỳ báo cáo nhịp tim và SpO2 mỗi 500ms
+    if (HAL_GetTick() - tsLastReport > 500) {
+        heartRate = PulseOximeter_GetHeartRate(&pox);
+        spo2 = PulseOximeter_GetSpO2(&pox);
+
+        // Hiển thị LCD
+        sprintf(MAX30100_data, "HR: %d bpm", heartRate);
+        lcdSetCursor(0, 15);
+        lcdPrintf(MAX30100_data);
+        sprintf(MAX30100_data, "SpO2: %d %%", spo2);
+        lcdSetCursor(0, 30);
+        lcdPrintf(MAX30100_data);
+
+
+        Send_AT_Commands(&huart1);
+        tsLastReport = HAL_GetTick();
+    }
+
+    HAL_Delay(10);
 }
 
 void AD8232_ReadData()

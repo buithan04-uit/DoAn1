@@ -1,5 +1,8 @@
-Core/Src/max30100_for_stm32_hal.o: ../Core/Src/max30100_for_stm32_hal.c \
- ../Core/Inc/max30100_for_stm32_hal.h ../Core/Inc/main.h \
+Core/Src/MAX30100_PulseOximeter.o: ../Core/Src/MAX30100_PulseOximeter.c \
+ ../Core/Inc/MAX30100_PulseOximeter.h ../Core/Inc/MAX30100.h \
+ ../Core/Inc/CircularBuffer.h ../Core/Inc/MAX30100_Registers.h \
+ ../Core/Inc/MAX30100_BeatDetector.h ../Core/Inc/MAX30100_Filters.h \
+ ../Core/Inc/MAX30100_SpO2Calculator.h \
  ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal.h \
  ../Core/Inc/stm32f4xx_hal_conf.h \
  ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_rcc.h \
@@ -35,10 +38,14 @@ Core/Src/max30100_for_stm32_hal.o: ../Core/Src/max30100_for_stm32_hal.c \
  ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_spi.h \
  ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_tim.h \
  ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_tim_ex.h \
- ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_uart.h \
- ../Core/Inc/main.h
-../Core/Inc/max30100_for_stm32_hal.h:
-../Core/Inc/main.h:
+ ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_uart.h
+../Core/Inc/MAX30100_PulseOximeter.h:
+../Core/Inc/MAX30100.h:
+../Core/Inc/CircularBuffer.h:
+../Core/Inc/MAX30100_Registers.h:
+../Core/Inc/MAX30100_BeatDetector.h:
+../Core/Inc/MAX30100_Filters.h:
+../Core/Inc/MAX30100_SpO2Calculator.h:
 ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal.h:
 ../Core/Inc/stm32f4xx_hal_conf.h:
 ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_rcc.h:
@@ -75,4 +82,3 @@ Core/Src/max30100_for_stm32_hal.o: ../Core/Src/max30100_for_stm32_hal.c \
 ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_tim.h:
 ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_tim_ex.h:
 ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal_uart.h:
-../Core/Inc/main.h:

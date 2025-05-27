@@ -39,7 +39,10 @@ Core/Src/main.o: ../Core/Src/main.c ../Core/Inc/main.h \
  ../Core/Inc/registers.h ../Core/Inc/fonts.h ../Core/Inc/image.h \
  ../Core/Inc/front_end.h ../Core/Inc/ili9341.h ../Core/Inc/DHT.h \
  ../Core/Inc/touch.h ../Core/Inc/cJSON.h ../Core/Inc/DHT.h \
- ../Core/Inc/max30100_for_stm32_hal.h ../Core/Inc/AD8232.h
+ ../Core/Inc/MAX30100_PulseOximeter.h ../Core/Inc/MAX30100.h \
+ ../Core/Inc/CircularBuffer.h ../Core/Inc/MAX30100_Registers.h \
+ ../Core/Inc/MAX30100_BeatDetector.h ../Core/Inc/MAX30100_Filters.h \
+ ../Core/Inc/MAX30100_SpO2Calculator.h ../Core/Inc/AD8232.h
 ../Core/Inc/main.h:
 ../Drivers/STM32F4xx_HAL_Driver/Inc/stm32f4xx_hal.h:
 ../Core/Inc/stm32f4xx_hal_conf.h:
@@ -89,5 +92,11 @@ Core/Src/main.o: ../Core/Src/main.c ../Core/Inc/main.h \
 ../Core/Inc/touch.h:
 ../Core/Inc/cJSON.h:
 ../Core/Inc/DHT.h:
-../Core/Inc/max30100_for_stm32_hal.h:
+../Core/Inc/MAX30100_PulseOximeter.h:
+../Core/Inc/MAX30100.h:
+../Core/Inc/CircularBuffer.h:
+../Core/Inc/MAX30100_Registers.h:
+../Core/Inc/MAX30100_BeatDetector.h:
+../Core/Inc/MAX30100_Filters.h:
+../Core/Inc/MAX30100_SpO2Calculator.h:
 ../Core/Inc/AD8232.h:
