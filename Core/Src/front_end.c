@@ -511,6 +511,7 @@ int numDay(int date , int month , int year){
 		}
 	}
 	sum += date;
+	return sum;
 }
 bool CheckYear(int year){
 	if (((year % 4)==0) && ((year % 100)!=0)){

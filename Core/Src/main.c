@@ -31,7 +31,8 @@
 #include "stdlib.h"
 #include "stdbool.h"
 #include "DHT.h"
-#include "max30100_for_stm32_hal.h"
+#include "MAX30100_PulseOximeter.h"
+#include "AD8232.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -46,6 +47,13 @@
 #define UART_RX_BUFFER_SIZE 1024
 #define UART_BUFFER_SIZE 2048
 uint8_t uart_rx_buffer[UART_BUFFER_SIZE];
+#define ECG_X_MAX 320  // chi�?u rộng màn hình LCD
+#define ECG_Y_MAX 240  // chi�?u cao màn hình LCD
+#define ECG_BASELINE 120  // đư�?ng trung tâm (ngang) để vẽ ECG
+#define ECG_SCALE 0.05f    // hệ số scale giá trị ADC xuống pixel (tùy chỉnh nếu thấy lệch)
+
+uint16_t ecg_x = 0;
+uint16_t old_y = ECG_BASELINE;
 
 /* USER CODE END PD */
 
@@ -55,6 +63,8 @@ uint8_t uart_rx_buffer[UART_BUFFER_SIZE];
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
+ADC_HandleTypeDef hadc3;
+
 I2C_HandleTypeDef hi2c1;
 
 SPI_HandleTypeDef hspi2;
@@ -77,19 +87,23 @@ static void MX_USART1_UART_Init(void);
 static void MX_SPI2_Init(void);
 static void MX_TIM2_Init(void);
 static void MX_I2C1_Init(void);
+static void MX_ADC3_Init(void);
 /* USER CODE BEGIN PFP */
 /* Private function prototypes -----------------------------------------------*/
-void processWeather(char *jsonString);
-
 void UART_ReceiveString(UART_HandleTypeDef *huart, char *buffer, int buffer_size);
 void Send_AT_Commands(UART_HandleTypeDef *huart);
-void Resend_AT_Commands(UART_HandleTypeDef *huart);
 void Send_AT_Command(UART_HandleTypeDef *huart, const char *command, uint32_t timeout );
-void Send_AT_Command1(UART_HandleTypeDef *huart, const char *command, uint32_t timeout );
+
 //
 void RunProgram();
 void Max30100 ();
+void Max30100_Init();
+void AD8232_ReadData();
+void ECG_DrawWave(uint16_t value);
+void onBeatDetected(void) {
+    // Xử lý khi phát hiện nhịp tim (bật LED, gửi UART, ...)
 
+}
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -114,13 +128,18 @@ int current_humi;
 int current_code;
 int current_cloud;
 int isDay;
-
+int AD8232_value = 0;
 int choice = 1;
 int choiceTmp = 1;
+PulseOximeter pox;
+uint32_t tsLastReport = 0;
 //
 int current = 1;
 bool updated = true;
 int16_t tx , ty;
+char MAX30100_data[1024];
+uint8_t heartRate;
+uint8_t spo2;
 
 int i = 0;
 
@@ -171,9 +190,10 @@ int main(void)
   MX_SPI2_Init();
   MX_TIM2_Init();
   MX_I2C1_Init();
+  MX_ADC3_Init();
   /* USER CODE BEGIN 2 */
   //-----------------------------
-
+  // LCD init
   LCD_BL_ON();
   HAL_TIM_Base_Start_IT(&htim2);
   TouchCalibrate();
@@ -183,31 +203,12 @@ int main(void)
 
   lcdSetOrientation(i%4);
   lcdFillRGB(COLOR_BLACK);
+  lcdSetTextColor(COLOR_YELLOW,COLOR_BLACK);
+  lcdSetTextFont(&Font16);
+  // Max30100 init
+  Max30100_Init();
 
-
-//  if (HAL_I2C_IsDeviceReady(&hi2c1, 0x57, 3, 100) == HAL_OK) {
-//	  lcdSetTextColor(COLOR_CYAN, COLOR_BLACK);
-//	  lcdSetTextFont(&Font16);
-//	  lcdSetCursor(5, 5);
-//      lcdPrintf("MAX30100 OK\n");
-//      HAL_Delay(3000);
-//  } else {
-//	  lcdSetTextColor(COLOR_CYAN, COLOR_BLACK);
-//	  lcdSetTextFont(&Font16);
-//	  lcdSetCursor(5, 5);
-//      lcdPrintf("MAX30100 not found\n");
-//      HAL_Delay(3000);
-//  }
-
-  MAX30100_Init(&hi2c1, &huart1);
-  MAX30100_SetSpO2SampleRate(MAX30100_SPO2SR_DEFAULT);
-  MAX30100_SetLEDPulseWidth(MAX30100_LEDPW_DEFAULT);
-  MAX30100_SetLEDCurrent(MAX30100_LEDCURRENT_DEFAULT, MAX30100_LEDCURRENT_DEFAULT);
-  MAX30100_SetMode(MAX30100_SPO2_MODE);
-
-
-
-
+  // Connect wifi
 //  Send_AT_Commands(&huart1);
 //  processWeather(uart_rx_buffer);
 
@@ -219,8 +220,6 @@ int main(void)
   {
 	  //RunProgram();
 	  Max30100();
-
-	  HAL_Delay(2000);
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
@@ -271,6 +270,58 @@ void SystemClock_Config(void)
   {
     Error_Handler();
   }
+}
+
+/**
+  * @brief ADC3 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_ADC3_Init(void)
+{
+
+  /* USER CODE BEGIN ADC3_Init 0 */
+
+  /* USER CODE END ADC3_Init 0 */
+
+  ADC_ChannelConfTypeDef sConfig = {0};
+
+  /* USER CODE BEGIN ADC3_Init 1 */
+
+  /* USER CODE END ADC3_Init 1 */
+
+  /** Configure the global features of the ADC (Clock, Resolution, Data Alignment and number of conversion)
+  */
+  hadc3.Instance = ADC3;
+  hadc3.Init.ClockPrescaler = ADC_CLOCK_SYNC_PCLK_DIV4;
+  hadc3.Init.Resolution = ADC_RESOLUTION_12B;
+  hadc3.Init.ScanConvMode = DISABLE;
+  hadc3.Init.ContinuousConvMode = ENABLE;
+  hadc3.Init.DiscontinuousConvMode = DISABLE;
+  hadc3.Init.ExternalTrigConvEdge = ADC_EXTERNALTRIGCONVEDGE_NONE;
+  hadc3.Init.ExternalTrigConv = ADC_SOFTWARE_START;
+  hadc3.Init.DataAlign = ADC_DATAALIGN_RIGHT;
+  hadc3.Init.NbrOfConversion = 1;
+  hadc3.Init.DMAContinuousRequests = DISABLE;
+  hadc3.Init.EOCSelection = ADC_EOC_SINGLE_CONV;
+  if (HAL_ADC_Init(&hadc3) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time.
+  */
+  sConfig.Channel = ADC_CHANNEL_0;
+  sConfig.Rank = 1;
+  sConfig.SamplingTime = ADC_SAMPLETIME_3CYCLES;
+  if (HAL_ADC_ConfigChannel(&hadc3, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN ADC3_Init 2 */
+
+  /* USER CODE END ADC3_Init 2 */
+
 }
 
 /**
@@ -436,11 +487,11 @@ static void MX_GPIO_Init(void)
 
   /* GPIO Ports Clock Enable */
   __HAL_RCC_GPIOH_CLK_ENABLE();
+  __HAL_RCC_GPIOA_CLK_ENABLE();
   __HAL_RCC_GPIOC_CLK_ENABLE();
   __HAL_RCC_GPIOB_CLK_ENABLE();
   __HAL_RCC_GPIOE_CLK_ENABLE();
   __HAL_RCC_GPIOD_CLK_ENABLE();
-  __HAL_RCC_GPIOA_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(GPIOB, LCD_BL_Pin|TOUCH_CS_Pin, GPIO_PIN_RESET);
@@ -526,20 +577,6 @@ static void MX_FSMC_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
-void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
-{
-    if (GPIO_Pin == GPIO_PIN_0)
-    {
-        // Xử lý khi có ngắt từ PB0 tại đây
-		  lcdSetTextColor(COLOR_CYAN, COLOR_BLACK);
-		  lcdSetTextFont(&Font16);
-		  lcdSetCursor(5, 5);
-		  lcdPrintf("MAX30100 is ready.\r\n");
-		  HAL_Delay(3000);
-    }
-}
-
-
 // Hàm callback khi ngắt xảy ra
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 {
@@ -561,496 +598,114 @@ void Send_AT_Command(UART_HandleTypeDef *huart, const char *command, uint32_t ti
 
     HAL_UART_Transmit(huart, (uint8_t *)command, strlen(command), HAL_MAX_DELAY);
 
-    // Ch�? phản hồi từ ESP
-    memset(uart_rx_buffer, 0, UART_BUFFER_SIZE); // Xóa buffer
-    HAL_UART_Receive(huart, uart_rx_buffer, UART_BUFFER_SIZE, timeout);
+//    memset(uart_rx_buffer, 0, UART_BUFFER_SIZE); // Xóa buffer
+//    HAL_UART_Receive(huart, uart_rx_buffer, UART_BUFFER_SIZE, timeout);
 
-    // Hiển thị phản hồi lên màn hình
-    lcdSetCursor(5,220);
-    Screen0();
-    lcdSetTextColor(COLOR_BLACK, COLOR_THEME_SKYBLUE_BASE);
-    lcdSetTextFont(&Font16);
-    lcdPrintf("ESP: %s\n", uart_rx_buffer);
+    lcdSetCursor(0,220);
+    lcdPrintf("ESP Send: %s           ", command);
 }
-void Send_AT_Command1(UART_HandleTypeDef *huart, const char *command, uint32_t timeout) {
-    // Gửi lệnh qua UART
 
-    HAL_UART_Transmit(huart, (uint8_t *)command, strlen(command), HAL_MAX_DELAY);
-
-    // Ch�? phản hồi từ ESP
-    memset(uart_rx_buffer, 0, UART_BUFFER_SIZE); // Xóa buffer
-    HAL_UART_Receive(huart, uart_rx_buffer, UART_BUFFER_SIZE, timeout);
-}
 
 
 void Send_AT_Commands(UART_HandleTypeDef *huart) {
-    // Gửi từng lệnh AT và xử lý phản hồi
-
-    Send_AT_Command(huart, "AT\r\n", 3000 );
-    Send_AT_Command(huart, "AT+CWMODE=3\r\n", 3000 );
-    Send_AT_Command(huart, "AT+CWJAP=\"Redmi Turbo 3\",\"88888888\"\r\n", 9000 );
-    Send_AT_Command(huart, "AT+CIPSTART=\"TCP\",\"api.open-meteo.com\",80\r\n", 3000 );
-    Send_AT_Command(huart, "AT+CIPSEND=299\r\n", 3000);
-
-    // Gửi yêu cầu GET cuối cùng
-    if (choice == 1){
-    	Send_AT_Command(huart, ATCommand1, 5000);
-    }
-    else if(choice == 2){
-    	Send_AT_Command(huart, ATCommand2, 5000);
-    }
-    else if(choice == 3){
-		Send_AT_Command(huart, ATCommand3, 5000);
-	}
-    else if(choice == 4){
-		Send_AT_Command(huart, ATCommand4, 5000);
-	}
-    else if(choice == 5){
-		Send_AT_Command(huart, ATCommand5, 5000);
-	}
-
+	sprintf(MAX30100_data, "HR=%d;SPO2=%d;AD8232=%d\n", heartRate,spo2,AD8232_value);
+	Send_AT_Command(huart, MAX30100_data , 10000);
 }
-void Resend_AT_Commands(UART_HandleTypeDef *huart){
-	Send_AT_Command1(huart, "AT+CIPSTART=\"TCP\",\"api.open-meteo.com\",80\r\n", 3000 );
-	Send_AT_Command1(huart, "AT+CIPSEND=299\r\n", 3000);
 
-	// Gửi yêu cầu GET cuối cùng
-	if (choice == 1){
-		Send_AT_Command1(huart, ATCommand1, 5000);
-	}
-	else if(choice == 2){
-		Send_AT_Command1(huart, ATCommand2, 5000);
-	}
-	else if(choice == 3){
-		Send_AT_Command1(huart, ATCommand3, 5000);
-	}
-	else if(choice == 4){
-		Send_AT_Command1(huart, ATCommand4, 5000);
-	}
-	else if(choice == 5){
-		Send_AT_Command1(huart, ATCommand5, 5000);
-	}
-}
 
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
     if (huart->Instance == USART1) { // Kiểm tra UART đúng
         // Xử lý dữ liệu nhận được ở đây
-
-        // Tiếp tục nhận dữ liệu
         HAL_UART_Receive_IT(huart, uart_rx_buffer, UART_BUFFER_SIZE);
     }
 }
-char* extractJsonObject(const char *jsonString) {
-    const char *start = strstr(jsonString, "\"current\":{\"t");
-    const char *end = strrchr(jsonString, '}');
-    if (start && end && end > start) {
-        size_t length = end - start + 1;
-        char *result = (char *)malloc(length + 2); // Allocate extra space for the '{' character
-        if (result) {
-            result[0] = '{'; // Add '{' at the beginning
-            strncpy(result + 1, start, length); // Copy the rest of the string
-            result[length + 1] = '\0'; // Null-terminate the string
-            return result;
-        }
-    }
-    return NULL;
+void Max30100_Init (){
+	// Init
+	PulseOximeter_Init(&pox);
+	PulseOximeter_SetOnBeatDetectedCallback(&pox, onBeatDetected);
+	if (!PulseOximeter_Begin(&pox, PULSEOXIMETER_DEBUGGINGMODE_NONE)) {
+	  lcdSetCursor(0, 0);
+	  lcdPrintf("Initializing!!");
+	  while (1);
+	} else {
+	  lcdSetCursor(0, 0);
+	  lcdPrintf("Init successfull");
+	}
+	// Check
+	uint8_t spo2cfg = MAX30100_ReadRegister(MAX30100_REG_SPO2_CONFIGURATION);
+	spo2cfg |= (1 << 6);
+	MAX30100_WriteRegister(MAX30100_REG_SPO2_CONFIGURATION, spo2cfg);
+	spo2cfg = MAX30100_ReadRegister(MAX30100_REG_SPO2_CONFIGURATION);
+	sprintf(MAX30100_data, "SPO2CFG:0x%02X", spo2cfg);
+	lcdSetCursor(0, 15);
+	lcdPrintf(MAX30100_data);
+	//
+	MAX30100_WriteRegister(MAX30100_REG_INTERRUPT_STATUS, 0x00);
+	uint8_t mode = MAX30100_ReadRegister(MAX30100_REG_MODE_CONFIGURATION);
+	sprintf(MAX30100_data, "MODE:0x%02X", mode);
+	lcdSetCursor(0, 30);
+	lcdPrintf(MAX30100_data);
+	//
+	uint8_t status = MAX30100_ReadRegister(MAX30100_REG_INTERRUPT_STATUS);
+	sprintf(MAX30100_data, "INT:0x%02X", status);
+	lcdSetCursor(0, 45);
+	lcdPrintf(MAX30100_data);
+	//
+	uint8_t part_id = MAX30100_GetPartId(&pox.hrm);
+	sprintf(MAX30100_data, "PartID: 0x%02X", part_id);
+	lcdSetCursor(0, 60);
+	lcdPrintf(MAX30100_data);
+	//
+	HAL_Delay(3000);
+	tsLastReport = HAL_GetTick();
+	lcdFillRGB(COLOR_BLACK);
 }
-
-
-void processWeather( char *jsonString) {
-
-	jsonString = extractJsonObject(jsonString);
-
-    cJSON *json = cJSON_Parse(jsonString);
-
-    if (json == NULL) {
-        lcdSetCursor(10, 10);
-        lcdSetTextColor(COLOR_RED, COLOR_BLACK);
-        lcdPrintf("Error parsing JSON!");
-        return;
-    }
-
-    // Get daily forecast information
-    cJSON *daily = cJSON_GetObjectItem(json, "daily");
-    cJSON *current = cJSON_GetObjectItem(json, "current");
-    if (!daily) {
-        lcdSetCursor(10, 10);
-        lcdSetTextColor(COLOR_RED, COLOR_BLACK);
-        lcdPrintf("Error: Missing 'daily' object!");
-        cJSON_Delete(json);
-        return;
-    }
-
-    cJSON *dates = cJSON_GetObjectItem(daily, "time");
-    cJSON *temp_max_json = cJSON_GetObjectItem(daily, "temperature_2m_max");
-    cJSON *temp_min_json = cJSON_GetObjectItem(daily, "temperature_2m_min");
-    cJSON *uv_json = cJSON_GetObjectItem(daily, "uv_index_max");
-    cJSON *weather_code = cJSON_GetObjectItem(daily, "weather_code");
-    cJSON *wind_speed_json = cJSON_GetObjectItem(daily, "wind_speed_10m_max");
-
-    char * Tmp =  cJSON_GetObjectItem(current , "time")->valuestring;
-    int year, month, day, hour , minute;
-	char  tmp[17];
-	sscanf(Tmp, "%d-%d-%dT%d:%d", &year, &month, &day , &hour ,&minute);
-	snprintf(tmp, sizeof(tmp), "%02d-%02d-%02d", day, month , year);
-	strncpy(current_date, tmp, sizeof(current_date) - 1);
-	current_date[sizeof(current_date) - 1] = '\0';
-
-	snprintf(tmp, sizeof(tmp), "%02d:%02d", hour, minute);
-	strncpy(current_time, tmp, sizeof(current_time) - 1);
-	current_time[sizeof(current_time) - 1] = '\0';
-
-    current_temp =  cJSON_GetObjectItem(current , "temperature_2m")->valueint;
-
-	current_humi =  cJSON_GetObjectItem(current , "relative_humidity_2m")->valueint;
-
-	current_code =  cJSON_GetObjectItem(current , "weather_code")->valueint;
-
-	current_cloud =  cJSON_GetObjectItem(current , "cloud_cover")->valueint;
-
-	isDay = cJSON_GetObjectItem(current , "is_day")->valueint;
-
-    // Allocate memory for global variables
-    int num_days = cJSON_GetArraySize(dates);
-    temp_max = (int *)malloc(num_days * sizeof(int));
-    temp_min = (int *)malloc(num_days * sizeof(int));
-    UV = (double *)malloc(num_days * sizeof(double));
-    wind_speed = (int *)malloc(num_days * sizeof(int));
-    day_code = (int *)malloc(num_days * sizeof(int));
-    if (!temp_max || !temp_min || !wind_speed || !day_code) {
-        lcdSetCursor(10, 10);
-        lcdSetTextColor(COLOR_RED, COLOR_BLACK);
-        lcdPrintf("Error allocating memory!");
-        cJSON_Delete(json);
-        return;
-    }
-
-    // Convert dates and extract weather data
-    for (int i = 0; i < num_days; i++) {
-        char *date = cJSON_GetArrayItem(dates, i)->valuestring;
-        temp_max[i] = (int)cJSON_GetArrayItem(temp_max_json, i)->valuedouble;
-        temp_min[i] = (int)cJSON_GetArrayItem(temp_min_json, i)->valuedouble;
-        UV[i] = cJSON_GetArrayItem(uv_json, i)->valuedouble;
-        wind_speed[i] = (int)cJSON_GetArrayItem(wind_speed_json, i)->valuedouble;
-        day_code[i] = cJSON_GetArrayItem(weather_code, i)->valueint;
-
-        // Extract month and day from date string
-        int year, month, days;
-        char tmp[6];
-        sscanf(date, "%d-%d-%d", &year, &month, &days);
-        snprintf(tmp, sizeof(tmp), "%02d-%02d", days, month);
-        strncat(Date[i], tmp, sizeof(Date[i]) - strlen(Date[i]) - 1);
-
-        // Convert day index to day name
-        char day[4];
-        int M;
-        M = FindDate(days, month, year);
-        switch (M) {
-            case 0: snprintf(day, sizeof(day), "Mon"); break;
-            case 1: snprintf(day, sizeof(day), "Tue"); break;
-            case 2: snprintf(day, sizeof(day), "Wed"); break;
-            case 3: snprintf(day, sizeof(day), "Thu"); break;
-            case 4: snprintf(day, sizeof(day), "Fri"); break;
-            case 5: snprintf(day, sizeof(day), "sat"); break;
-            case 6: snprintf(day, sizeof(day), "Sun"); break;
-            default: break;
-        }
-        strncat(day_name[i], day, sizeof(day_name[i]) - strlen(day_name[i]) - 1);
-    }
-
-    // Clean up memory
-    cJSON_Delete(json);
-}
-
-//
-
-void RunProgram(){
-  if (readDHT && current == 1)
-  {
-	  readDHT = false; // Xóa c�?
-	  DHT_ReadData(&temperature, &humidity);
-	  TextSensor(5, 245, temperature, humidity);
-  }
-  if(choice != choiceTmp && current == 1){
-	  Recall = true;
-	  choiceTmp = choice;
-  }
-
-  if (current == 1){
-	  if (updated == true){
-		  Screen1(temp_max[0] , temp_min[0] , current_temp ,  current_humi , current_code ,current_cloud ,current_time ,current_date ,choice);
-		  HAL_Delay(1000);
-		  updated = false;
-	  }
-	  if (TouchGetCalibratedPoint(&tx, &ty)){
-		  if (tx >= 199 && tx <= 239 && ty >= 25 && ty <= 65){
-			  current = 2;
-			  updated = true;
-			  HAL_Delay(200);
-		  }
-		  if (tx >= 158 && tx <= 198 && ty >= 25 && ty <= 65){
-			  current = 3;
-			  updated = true;
-			  HAL_Delay(200);
-		  }
-	  }
-  }
-  else if (current == 2){
-	  if (updated == true){
-		  Screen2(temp_max, temp_min, day_code, day_name, wind_speed, Date,current_time ,current_date ,choice);
-		  HAL_Delay(1000);
-		  updated = false;
-	  }
-	  if (TouchGetCalibratedPoint(&tx, &ty)){
-		  if (tx >= 180 && tx <= 230 && ty >= 10 && ty <= 100){
-			  current = 1;
-			  updated = true;
-			  HAL_Delay(100);
-		  }
-	  }
-  }
-  else if (current == 3){
-	  if (updated == true){
-		  Screen3(choice);
-		  HAL_Delay(1000);
-		  updated = false;
-		  choiceTmp=choice;
-	  }
-	  if (TouchGetCalibratedPoint(&tx, &ty)){
-		  if (tx >= 100 && tx <= 140 && ty >= 275 && ty <= 315){
-			  current = 1;
-			  updated = true;
-			  HAL_Delay(100);
-		  }
-		  if (tx >= 20 && tx <= 220 && ty >= 50 && ty <= 85){
-			  choice = 1;
-			  lcdFillRoundRect(20,50, 200, 35, 6, COLOR_GREEN);
-			  lcdDrawRoundRect(20,50, 200, 36, 6, COLOR_BLACK);
-			  lcdSetTextColor(COLOR_WHITE, COLOR_GREEN);
-			  lcdSetTextFont(&Font20);
-			  lcdSetCursor(25, 60);
-			  lcdPrintf("TP.HCM");
-			  //
-			  lcdFillRoundRect(20,95, 200, 35, 6, COLOR_LIGHTGREY);
-			  lcdDrawRoundRect(20,95, 200, 36, 6, COLOR_BLACK);
-			  lcdSetTextColor(COLOR_WHITE, COLOR_LIGHTGREY);
-			  lcdSetTextFont(&Font20);
-			  lcdSetCursor(25, 105);
-			  lcdPrintf("Ha Noi");
-			  //
-			  lcdSetTextColor(COLOR_WHITE, COLOR_LIGHTGREY);
-			  lcdFillRoundRect(20,140, 200, 35, 6, COLOR_LIGHTGREY);
-			  lcdDrawRoundRect(20,140, 200, 36, 6, COLOR_BLACK);
-			  lcdSetTextFont(&Font20);
-			  lcdSetCursor(25, 150);
-			  lcdPrintf("Hai Phong");
-			  //
-			  lcdSetTextColor(COLOR_WHITE, COLOR_LIGHTGREY);
-			  lcdFillRoundRect(20,185, 200, 35, 6, COLOR_LIGHTGREY);
-			  lcdDrawRoundRect(20,185, 200, 36, 6, COLOR_BLACK);
-			  lcdSetTextFont(&Font20);
-			  lcdSetCursor(25, 195);
-			  lcdPrintf("Can Tho");
-			  //
-			  lcdSetTextColor(COLOR_WHITE, COLOR_LIGHTGREY);
-			  lcdFillRoundRect(20,230, 200, 35, 6, COLOR_LIGHTGREY);
-			  lcdDrawRoundRect(20,230, 200, 36, 6, COLOR_BLACK);
-			  lcdSetTextFont(&Font20);
-			  lcdSetCursor(25, 240);
-			  lcdPrintf("Da Nang");
-			  HAL_Delay(200);
-		  }
-		  if (tx >= 20 && tx <= 220 && ty >= 95 && ty <= 130){
-			  choice = 2;
-			  lcdFillRoundRect(20,50, 200, 35, 6, COLOR_LIGHTGREY);
-			  lcdDrawRoundRect(20,50, 200, 36, 6, COLOR_BLACK);
-			  lcdSetTextColor(COLOR_WHITE, COLOR_LIGHTGREY);
-			  lcdSetTextFont(&Font20);
-			  lcdSetCursor(25, 60);
-			  lcdPrintf("TP.HCM");
-			  //
-			  lcdFillRoundRect(20,95, 200, 35, 6, COLOR_GREEN);
-			  lcdDrawRoundRect(20,95, 200, 36, 6, COLOR_BLACK);
-			  lcdSetTextColor(COLOR_WHITE, COLOR_GREEN);
-			  lcdSetTextFont(&Font20);
-			  lcdSetCursor(25, 105);
-			  lcdPrintf("Ha Noi");
-			  //
-			  lcdSetTextColor(COLOR_WHITE, COLOR_LIGHTGREY);
-			  lcdFillRoundRect(20,140, 200, 35, 6, COLOR_LIGHTGREY);
-			  lcdDrawRoundRect(20,140, 200, 36, 6, COLOR_BLACK);
-			  lcdSetTextFont(&Font20);
-			  lcdSetCursor(25, 150);
-			  lcdPrintf("Hai Phong");
-			  //
-			  lcdSetTextColor(COLOR_WHITE, COLOR_LIGHTGREY);
-			  lcdFillRoundRect(20,185, 200, 35, 6, COLOR_LIGHTGREY);
-			  lcdDrawRoundRect(20,185, 200, 36, 6, COLOR_BLACK);
-			  lcdSetTextFont(&Font20);
-			  lcdSetCursor(25, 195);
-			  lcdPrintf("Can Tho");
-			  //
-			  lcdSetTextColor(COLOR_WHITE, COLOR_LIGHTGREY);
-			  lcdFillRoundRect(20,230, 200, 35, 6, COLOR_LIGHTGREY);
-			  lcdDrawRoundRect(20,230, 200, 36, 6, COLOR_BLACK);
-			  lcdSetTextFont(&Font20);
-			  lcdSetCursor(25, 240);
-			  lcdPrintf("Da Nang");
-			  HAL_Delay(200);
-		  }
-		  if (tx >= 20 && tx <= 220 && ty >= 140 && ty <= 175){
-			  choice = 3;
-			  lcdFillRoundRect(20,50, 200, 35, 6, COLOR_LIGHTGREY);
-			  lcdDrawRoundRect(20,50, 200, 36, 6, COLOR_BLACK);
-			  lcdSetTextColor(COLOR_WHITE, COLOR_LIGHTGREY);
-			  lcdSetTextFont(&Font20);
-			  lcdSetCursor(25, 60);
-			  lcdPrintf("TP.HCM");
-			  //
-			  lcdFillRoundRect(20,95, 200, 35, 6, COLOR_LIGHTGREY);
-			  lcdDrawRoundRect(20,95, 200, 36, 6, COLOR_BLACK);
-			  lcdSetTextColor(COLOR_WHITE, COLOR_LIGHTGREY);
-			  lcdSetTextFont(&Font20);
-			  lcdSetCursor(25, 105);
-			  lcdPrintf("Ha Noi");
-			  //
-			  lcdSetTextColor(COLOR_WHITE, COLOR_GREEN);
-			  lcdFillRoundRect(20,140, 200, 35, 6, COLOR_GREEN);
-			  lcdDrawRoundRect(20,140, 200, 36, 6, COLOR_BLACK);
-			  lcdSetTextFont(&Font20);
-			  lcdSetCursor(25, 150);
-			  lcdPrintf("Hai Phong");
-			  //
-			  lcdSetTextColor(COLOR_WHITE, COLOR_LIGHTGREY);
-			  lcdFillRoundRect(20,185, 200, 35, 6, COLOR_LIGHTGREY);
-			  lcdDrawRoundRect(20,185, 200, 36, 6, COLOR_BLACK);
-			  lcdSetTextFont(&Font20);
-			  lcdSetCursor(25, 195);
-			  lcdPrintf("Can Tho");
-			  //
-			  lcdSetTextColor(COLOR_WHITE, COLOR_LIGHTGREY);
-			  lcdFillRoundRect(20,230, 200, 35, 6, COLOR_LIGHTGREY);
-			  lcdDrawRoundRect(20,230, 200, 36, 6, COLOR_BLACK);
-			  lcdSetTextFont(&Font20);
-			  lcdSetCursor(25, 240);
-			  lcdPrintf("Da Nang");
-			  HAL_Delay(200);
-					  }
-		  if (tx >= 20 && tx <= 220 && ty >= 185 && ty <= 220){
-			  choice = 4;
-			  lcdFillRoundRect(20,50, 200, 35, 6, COLOR_LIGHTGREY);
-			  lcdDrawRoundRect(20,50, 200, 36, 6, COLOR_BLACK);
-			  lcdSetTextColor(COLOR_WHITE, COLOR_LIGHTGREY);
-			  lcdSetTextFont(&Font20);
-			  lcdSetCursor(25, 60);
-			  lcdPrintf("TP.HCM");
-			  //
-			  lcdFillRoundRect(20,95, 200, 35, 6, COLOR_LIGHTGREY);
-			  lcdDrawRoundRect(20,95, 200, 36, 6, COLOR_BLACK);
-			  lcdSetTextColor(COLOR_WHITE, COLOR_LIGHTGREY);
-			  lcdSetTextFont(&Font20);
-			  lcdSetCursor(25, 105);
-			  lcdPrintf("Ha Noi");
-			  //
-			  lcdSetTextColor(COLOR_WHITE, COLOR_LIGHTGREY);
-			  lcdFillRoundRect(20,140, 200, 35, 6, COLOR_LIGHTGREY);
-			  lcdDrawRoundRect(20,140, 200, 36, 6, COLOR_BLACK);
-			  lcdSetTextFont(&Font20);
-			  lcdSetCursor(25, 150);
-			  lcdPrintf("Hai Phong");
-			  //
-			  lcdSetTextColor(COLOR_WHITE, COLOR_GREEN);
-			  lcdFillRoundRect(20,185, 200, 35, 6, COLOR_GREEN);
-			  lcdDrawRoundRect(20,185, 200, 36, 6, COLOR_BLACK);
-			  lcdSetTextFont(&Font20);
-			  lcdSetCursor(25, 195);
-			  lcdPrintf("Can Tho");
-			  //
-			  lcdSetTextColor(COLOR_WHITE, COLOR_LIGHTGREY);
-			  lcdFillRoundRect(20,230, 200, 35, 6, COLOR_LIGHTGREY);
-			  lcdDrawRoundRect(20,230, 200, 36, 6, COLOR_BLACK);
-			  lcdSetTextFont(&Font20);
-			  lcdSetCursor(25, 240);
-			  lcdPrintf("Da Nang");
-			  HAL_Delay(200);
-		  }
-		  if (tx >= 20 && tx <= 220 && ty >= 230 && ty <= 265){
-			  choice = 5;
-			  lcdFillRoundRect(20,50, 200, 35, 6, COLOR_LIGHTGREY);
-			  lcdDrawRoundRect(20,50, 200, 36, 6, COLOR_BLACK);
-			  lcdSetTextColor(COLOR_WHITE, COLOR_LIGHTGREY);
-			  lcdSetTextFont(&Font20);
-			  lcdSetCursor(25, 60);
-			  lcdPrintf("TP.HCM");
-			  //
-			  lcdFillRoundRect(20,95, 200, 35, 6, COLOR_LIGHTGREY);
-			  lcdDrawRoundRect(20,95, 200, 36, 6, COLOR_BLACK);
-			  lcdSetTextColor(COLOR_WHITE, COLOR_LIGHTGREY);
-			  lcdSetTextFont(&Font20);
-			  lcdSetCursor(25, 105);
-			  lcdPrintf("Ha Noi");
-			  //
-			  lcdSetTextColor(COLOR_WHITE, COLOR_LIGHTGREY);
-			  lcdFillRoundRect(20,140, 200, 35, 6, COLOR_LIGHTGREY);
-			  lcdDrawRoundRect(20,140, 200, 36, 6, COLOR_BLACK);
-			  lcdSetTextFont(&Font20);
-			  lcdSetCursor(25, 150);
-			  lcdPrintf("Hai Phong");
-			  //
-			  lcdSetTextColor(COLOR_WHITE, COLOR_LIGHTGREY);
-			  lcdFillRoundRect(20,185, 200, 35, 6, COLOR_LIGHTGREY);
-			  lcdDrawRoundRect(20,185, 200, 36, 6, COLOR_BLACK);
-			  lcdSetTextFont(&Font20);
-			  lcdSetCursor(25, 195);
-			  lcdPrintf("Can Tho");
-			  //
-			  lcdSetTextColor(COLOR_WHITE, COLOR_GREEN);
-			  lcdFillRoundRect(20,230, 200, 35, 6, COLOR_GREEN);
-			  lcdDrawRoundRect(20,230, 200, 36, 6, COLOR_BLACK);
-			  lcdSetTextFont(&Font20);
-			  lcdSetCursor(25, 240);
-			  lcdPrintf("Da Nang");
-			  HAL_Delay(200);
-		  }
-	  }
-  }
-  if(Recall){
-	  Screen0();
-	  Resend_AT_Commands(&huart1);
-	  processWeather(uart_rx_buffer);
-	  if (current == 1){
-		  Screen1(temp_max[0] , temp_min[0] , current_temp ,  current_humi , current_code ,current_cloud ,current_time ,current_date , choice);
-	  }
-	  if (current == 2){
-		  Screen2(temp_max, temp_min, day_code, day_name, wind_speed, Date,current_time ,current_date ,choice);
-	  }
-	  if (current == 3){
-		  Screen3(choice);
-	  }
-	  Recall = false;
-  }
-  if(Reload){
-  	  Resend_AT_Commands(&huart1);
-  	  processWeather(uart_rx_buffer);
-  	  if (current == 1){
-  		  Screen1(temp_max[0] , temp_min[0] , current_temp ,  current_humi , current_code ,current_cloud ,current_time ,current_date , choice);
-  	  }
-  	  if (current == 2){
-  		  Screen2(temp_max, temp_min, day_code, day_name, wind_speed, Date,current_time ,current_date ,choice);
-  	  }
-  	  if (current == 3){
-  		  Screen3(choice);
-  	  }
-  	  Reload = false;
-    }
-}
-
 void Max30100 (){
-	  lcdSetTextColor(COLOR_CYAN, COLOR_BLACK);
-	  lcdSetTextFont(&Font16);
-	  lcdSetCursor(5, 5);
-	  lcdPrintf("MAX30100 : %d\n" , i);
-	  i++;
+    PulseOximeter_Update(&pox);
+    heartRate = PulseOximeter_GetHeartRate(&pox);
+    spo2 = PulseOximeter_GetSpO2(&pox);
+
+    // Hiển thị LCD
+    sprintf(MAX30100_data, "HR: %d bpm", heartRate);
+    lcdSetCursor(0, 15);
+    lcdPrintf(MAX30100_data);
+    sprintf(MAX30100_data, "SpO2: %d", spo2);
+    lcdSetCursor(0, 30);
+    lcdPrintf(MAX30100_data);
+    sprintf(MAX30100_data, "AD8232: %d", AD8232_value);
+    lcdSetCursor(0, 45);
+    lcdPrintf(MAX30100_data);
+
+    // Send Data định kỳ
+    if (HAL_GetTick() - tsLastReport > 5000) {
+        Send_AT_Commands(&huart1);
+        tsLastReport = HAL_GetTick();
+    }
+
+    HAL_Delay(10);
+}
+void AD8232_ReadData()
+{
+    // Đọc trạng thái dây điện cực (LO+ và LO-)
+    GPIO_PinState lo_plus = HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_1);
+    GPIO_PinState lo_minus = HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_2);
+
+    lcdSetTextColor(COLOR_YELLOW, COLOR_BLACK);
+    lcdSetTextFont(&Font16);
+    lcdSetCursor(5, 20);
+
+    // Kiểm tra xem có bị rơi điện cực không
+    if (lo_plus == GPIO_PIN_SET || lo_minus == GPIO_PIN_SET)
+    {
+    	lcdSetCursor(5, 60);
+        lcdPrintf("ECG Error!!!");
+    }
+    else
+    {
+    	lcdSetCursor(5, 60);
+        AD8232_value = AD8232_Read();
+        lcdPrintf("AD8232 : %d       ", AD8232_value);
+    }
 }
 /* USER CODE END 4 */
 

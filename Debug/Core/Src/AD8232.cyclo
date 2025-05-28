@@ -1,0 +1,2 @@
+../Core/Src/AD8232.c:13:6:AD8232_Init	1
+../Core/Src/AD8232.c:18:10:AD8232_Read	2
